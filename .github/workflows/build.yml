@@ -1,0 +1,39 @@
+name: Build SnapshotInstaller
+
+on:
+  push:
+    branches: [ main, master ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Build with MinGW
+      shell: cmd
+      run: |
+        where gcc
+        gcc --version
+        windres snapshot.rc -O coff -o snapshot.res
+        gcc -mwindows -O2 -s -o SnapshotInstaller.exe main.c snapshot.res -lcomctl32 -lshlwapi -lcomdlg32 -lole32 -luuid
+        dir *.exe
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: SnapshotInstaller
+        path: SnapshotInstaller.exe
+
+    - name: Create Release
+      if: startsWith(github.ref, 'refs/tags/v')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: SnapshotInstaller.exe
+        generate_release_notes: true

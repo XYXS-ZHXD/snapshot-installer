@@ -1,0 +1,12 @@
+*.exe
+*.o
+*.res
+*.obj
+*.suo
+*.user
+*.aps
+*.ncb
+Debug/
+Release/
+x64/
+x86/
