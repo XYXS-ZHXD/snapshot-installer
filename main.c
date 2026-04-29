@@ -146,9 +146,13 @@ static void RefreshDriveList(void) {
 /* ====== SNA 文件搜索 ====== */
 
 /* 递归搜索指定根目录下的所有 .sna 文件 */
-static void SearchSnaInDir(const WCHAR* dir) {
+static void SearchSnaInDir(WCHAR* dir) {
     if (g_snaCount >= MAX_SNA_FILES) return;
     if (g_bFoundInDrive) return;  /* 已找到镜像，不再继续搜 */
+
+    /* 统一去掉末尾的反斜杠，保证路径末尾干净 */
+    size_t len = wcslen(dir);
+    if (len > 0 && dir[len - 1] == L'\\') dir[len - 1] = L'\0';
 
     WCHAR pattern[MAX_PATH];
     swprintf(pattern, MAX_PATH, L"%s\\*", dir);
