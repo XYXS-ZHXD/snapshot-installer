@@ -51,24 +51,6 @@ int g_driveCount = 0;
 
 /* ====== Helper Functions ====== */
 
-/* 将路径中的反斜杠 \\ 统一替换为正斜杠 /，并合并连续的反斜杠/正斜杠
- * 解决根目录拼接时产生双反斜杠导致显示 D:// 的问题
- * Windows API 完全支持正斜杠路径 */
-static void NormalizePathSlash(WCHAR* path) {
-    if (!path) return;
-    WCHAR buf[MAX_PATH];
-    int j = 0;
-    for (int i = 0; path[i] && j < MAX_PATH - 1; i++) {
-        /* 跳过连续的反斜杠或正斜杠，保留第一个 */
-        if ((path[i] == L'\\' || path[i] == L'/')
-            && i > 0 && (path[i-1] == L'\\' || path[i-1] == L'/' || path[i-1] == L':'))
-            continue;
-        buf[j++] = (path[i] == L'\\') ? L'/' : path[i];
-    }
-    buf[j] = L'\0';
-    wcscpy(path, buf);
-}
-
 static const WCHAR* GetDriveTypeStr(UINT type) {
     switch (type) {
         case DRIVE_FIXED:    return L"本地磁盘";
@@ -245,12 +227,9 @@ static void PopulateSnaCombo(void) {
         swprintf(msg, 64, L"搜索完成，未找到 SNA 镜像文件");
         SetWindowTextW(g_hSearchStatus, msg);
     } else {
-        /* 只搜索到第一个有镜像的盘，直接追加到列表 */
+        /* 直接追加原始路径（Windows 原生反斜杠格式） */
         for (int i = 0; i < g_snaCount; i++) {
-            WCHAR normalized[MAX_PATH];
-            wcscpy(normalized, g_snaFiles[i]);
-            NormalizePathSlash(normalized);
-            SendMessageW(g_hSnaCombo, CB_ADDSTRING, 0, (LPARAM)normalized);
+            SendMessageW(g_hSnaCombo, CB_ADDSTRING, 0, (LPARAM)g_snaFiles[i]);
         }
         SendMessageW(g_hSnaCombo, CB_SETCURSEL, 0, 0);
         WCHAR msg[64];
@@ -544,8 +523,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 /* 浏览选择 SNA 文件 */
                 WCHAR path[MAX_PATH] = {0};
                 if (OpenSnaFile(hwnd, path, MAX_PATH)) {
-                    /* 统一正斜杠后检查是否已在列表中，没有则追加 */
-                    NormalizePathSlash(path);
+                    /* 检查是否已在列表中，没有则追加 */
                     int found = (int)SendMessageW(g_hSnaCombo, CB_FINDSTRINGEXACT, (WPARAM)-1, (LPARAM)path);
                     if (found == CB_ERR) {
                         found = (int)SendMessageW(g_hSnaCombo, CB_ADDSTRING, 0, (LPARAM)path);
