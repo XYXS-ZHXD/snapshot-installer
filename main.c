@@ -2,6 +2,7 @@
  * Snapshot 系统安装工具 - 绿色单文件 Win32 GUI
  * 用于 PE 环境下安装 SNA 格式系统镜像
  * 支持 UEFI 引导修复
+ * v1.1: 新增全盘自动搜索 SNA 镜像功能
  */
 
 #define _WIN32_IE 0x0600
@@ -21,8 +22,18 @@
 #include "resource.h"
 
 HINSTANCE g_hInst;
-HWND g_hWnd, g_hSnaPath, g_hTargetDrive, g_hPassword, g_hStatus, g_hDriveList;
-HWND g_hBtnInstall, g_hChkFixBoot;
+HWND g_hWnd, g_hSnaCombo, g_hTargetDrive, g_hPassword, g_hStatus, g_hDriveList;
+HWND g_hBtnInstall, g_hChkFixBoot, g_hSearchStatus;
+
+/* 自动搜索 SNA 列表 */
+#define MAX_SNA_FILES 128
+WCHAR g_snaFiles[MAX_SNA_FILES][MAX_PATH];
+int   g_snaCount = 0;
+BOOL  g_bSearching = FALSE;
+
+typedef struct {
+    HWND hwnd;
+} SEARCH_CTX;
 
 typedef struct {
     WCHAR szDrive[4];
@@ -64,7 +75,6 @@ static BOOL FixUEFIBoot(const WCHAR* systemDrive) {
 
     SetWindowTextW(g_hStatus, L"正在修复 UEFI 引导...");
 
-    /* Simple bcdboot - auto-detect ESP, Chinese locale */
     swprintf(cmdLine, 1024, L"bcdboot %s\\Windows /l zh-cn", systemDrive);
 
     PROCESS_INFORMATION pi = {0};
@@ -82,7 +92,6 @@ static BOOL FixUEFIBoot(const WCHAR* systemDrive) {
 
     return (exitCode == 0);
 }
-
 
 static void RefreshDriveList(void) {
     WCHAR szRoot[8], display[512], sizeStr[32], freeStr[32];
@@ -131,6 +140,96 @@ static void RefreshDriveList(void) {
     }
     if (g_hTargetDrive && g_driveCount > 0)
         SendMessage(g_hTargetDrive, CB_SETCURSEL, 0, 0);
+}
+
+/* ====== SNA 文件搜索 ====== */
+
+/* 递归搜索指定根目录下的所有 .sna 文件 */
+static void SearchSnaInDir(const WCHAR* dir) {
+    if (g_snaCount >= MAX_SNA_FILES) return;
+
+    WCHAR pattern[MAX_PATH];
+    swprintf(pattern, MAX_PATH, L"%s\\*", dir);
+
+    WIN32_FIND_DATAW fd;
+    HANDLE hFind = FindFirstFileW(pattern, &fd);
+    if (hFind == INVALID_HANDLE_VALUE) return;
+
+    do {
+        if (g_snaCount >= MAX_SNA_FILES) break;
+        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+
+        WCHAR fullPath[MAX_PATH];
+        swprintf(fullPath, MAX_PATH, L"%s\\%s", dir, fd.cFileName);
+
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            /* 跳过系统/隐藏目录以加快速度 */
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_SYSTEM))
+                SearchSnaInDir(fullPath);
+        } else {
+            /* 检查 .sna 后缀（不区分大小写） */
+            WCHAR* ext = wcsrchr(fd.cFileName, L'.');
+            if (ext && _wcsicmp(ext, L".sna") == 0) {
+                wcscpy(g_snaFiles[g_snaCount], fullPath);
+                g_snaCount++;
+            }
+        }
+    } while (FindNextFileW(hFind, &fd));
+
+    FindClose(hFind);
+}
+
+/* 搜索线程：遍历所有逻辑磁盘 */
+static unsigned int __stdcall SearchThread(void* param) {
+    HWND hwnd = (HWND)param;
+    g_bSearching = TRUE;
+    g_snaCount = 0;
+
+    /* 更新搜索状态 */
+    SetWindowTextW(g_hSearchStatus, L"正在搜索 SNA 镜像，请稍候...");
+
+    DWORD dwDrives = GetLogicalDrives();
+    for (int i = 0; i < 26; i++) {
+        if (!(dwDrives & (1 << i))) continue;
+        WCHAR szRoot[4];
+        swprintf(szRoot, 4, L"%c:\\", L'A' + i);
+        UINT dt = GetDriveTypeW(szRoot);
+        /* 搜索固定磁盘和可移动磁盘 */
+        if (dt == DRIVE_FIXED || dt == DRIVE_REMOVABLE || dt == DRIVE_RAMDISK) {
+            WCHAR msg[64];
+            swprintf(msg, 64, L"正在搜索 %c 盘...", L'A' + i);
+            SetWindowTextW(g_hSearchStatus, msg);
+            WCHAR searchDir[4];
+            swprintf(searchDir, 4, L"%c:", L'A' + i);
+            SearchSnaInDir(szRoot);
+        }
+    }
+
+    /* 搜索结束，将结果发送到主窗口 */
+    PostMessageW(hwnd, WM_APP + 1, 0, 0);
+    g_bSearching = FALSE;
+    return 0;
+}
+
+/* 将搜索结果填入下拉列表 */
+static void PopulateSnaCombo(void) {
+    SendMessageW(g_hSnaCombo, CB_RESETCONTENT, 0, 0);
+
+    if (g_snaCount == 0) {
+        SendMessageW(g_hSnaCombo, CB_ADDSTRING, 0, (LPARAM)L"（未找到 SNA 镜像，请点击浏览选择）");
+        SendMessageW(g_hSnaCombo, CB_SETCURSEL, 0, 0);
+        WCHAR msg[64];
+        swprintf(msg, 64, L"搜索完成，未找到 SNA 镜像文件");
+        SetWindowTextW(g_hSearchStatus, msg);
+    } else {
+        for (int i = 0; i < g_snaCount; i++) {
+            SendMessageW(g_hSnaCombo, CB_ADDSTRING, 0, (LPARAM)g_snaFiles[i]);
+        }
+        SendMessageW(g_hSnaCombo, CB_SETCURSEL, 0, 0);
+        WCHAR msg[64];
+        swprintf(msg, 64, L"搜索完成，找到 %d 个 SNA 镜像", g_snaCount);
+        SetWindowTextW(g_hSearchStatus, msg);
+    }
 }
 
 /* ====== File Open Dialog ====== */
@@ -183,7 +282,6 @@ static unsigned int __stdcall InstallThread(void* param) {
 
     si.cb = sizeof(si);
 
-    /* Set working directory to same as Snapshot64.exe */
     WCHAR workDir[MAX_PATH];
     wcscpy(workDir, snapshotExe);
     WCHAR* pW = wcsrchr(workDir, L'\\');
@@ -247,11 +345,23 @@ static void StartInstall(HWND hwnd) {
     int sel;
     BOOL fixBoot;
 
-    /* Get SNA path from edit box */
-    GetWindowTextW(g_hSnaPath, snaPath, MAX_PATH);
-    if (wcslen(snaPath) == 0) {
-        MessageBoxW(hwnd, L"请先选择 SNA 镜像文件！", L"提示", MB_OK | MB_ICONWARNING);
-        return;
+    /* 从下拉列表获取当前选中的 SNA 路径 */
+    GetWindowTextW(g_hSnaCombo, snaPath, MAX_PATH);
+    /* 去掉首尾空格后判空 */
+    {
+        WCHAR* p = snaPath;
+        while (*p == L' ') p++;
+        if (wcslen(p) == 0 || p[0] == L'\xef' /* 占位符 */ ||
+            wcscmp(p, L"（未找到 SNA 镜像，请点击浏览选择）") == 0) {
+            MessageBoxW(hwnd, L"请先选择或浏览 SNA 镜像文件！", L"提示", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        /* 检查文件扩展名 */
+        WCHAR* ext = wcsrchr(p, L'.');
+        if (!ext || _wcsicmp(ext, L".sna") != 0) {
+            MessageBoxW(hwnd, L"请选择有效的 SNA 镜像文件！", L"提示", MB_OK | MB_ICONWARNING);
+            return;
+        }
     }
 
     sel = (int)SendMessage(g_hTargetDrive, CB_GETCURSEL, 0, 0);
@@ -316,40 +426,50 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 WS_VISIBLE | WS_CHILD | SS_CENTER | SS_CENTERIMAGE,
                 50, 10, 500, 32, hwnd, NULL, g_hInst, NULL);
 
-            /* Image file - Combo box + browse button */
+            /* ---- SNA 镜像文件选择区 ---- */
+            /* 标签 */
             CreateWindowW(L"STATIC", L"镜像文件 (.sna):", WS_VISIBLE | WS_CHILD,
-                         20, 55, 130, 22, hwnd, NULL, g_hInst, NULL);
-            g_hSnaPath = CreateWindowW(L"EDIT", L"",
-                WS_VISIBLE | WS_CHILD | WS_BORDER | ES_AUTOHSCROLL | ES_READONLY,
-                150, 53, 315, 24, hwnd, (HMENU)IDC_SNA_PATH, g_hInst, NULL);
-            CreateWindowW(L"BUTTON", L"浏览...", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-                          470, 52, 75, 25, hwnd, (HMENU)IDC_BTN_BROWSE, g_hInst, NULL);
+                         20, 52, 130, 22, hwnd, NULL, g_hInst, NULL);
 
-            /* Target drive */
+            /* 下拉列表（可编辑，支持手动输入路径） */
+            g_hSnaCombo = CreateWindowW(WC_COMBOBOXW, L"",
+                WS_VISIBLE | WS_CHILD | CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL,
+                150, 50, 310, 260, hwnd, (HMENU)IDC_SNA_COMBO, g_hInst, NULL);
+
+            /* 浏览按钮 */
+            CreateWindowW(L"BUTTON", L"浏览...", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+                          466, 50, 80, 25, hwnd, (HMENU)IDC_BTN_BROWSE, g_hInst, NULL);
+
+            /* 搜索状态 */
+            g_hSearchStatus = CreateWindowW(L"STATIC", L"正在准备搜索...",
+                WS_VISIBLE | WS_CHILD | SS_LEFT,
+                150, 79, 396, 18, hwnd, (HMENU)IDC_SEARCH_STATUS, g_hInst, NULL);
+
+            /* ---- 目标分区 ---- */
             CreateWindowW(L"STATIC", L"目标分区:", WS_VISIBLE | WS_CHILD,
-                         20, 93, 90, 22, hwnd, NULL, g_hInst, NULL);
+                         20, 108, 90, 22, hwnd, NULL, g_hInst, NULL);
             g_hTargetDrive = CreateWindowW(WC_COMBOBOXW, L"",
                 WS_VISIBLE | WS_CHILD | CBS_DROPDOWNLIST | WS_VSCROLL,
-                110, 91, 200, 200, hwnd, (HMENU)IDC_TARGET_DRIVE, g_hInst, NULL);
+                110, 106, 200, 200, hwnd, (HMENU)IDC_TARGET_DRIVE, g_hInst, NULL);
 
-            /* Password */
+            /* ---- 还原密码 ---- */
             CreateWindowW(L"STATIC", L"还原密码:", WS_VISIBLE | WS_CHILD,
-                         325, 93, 70, 22, hwnd, NULL, g_hInst, NULL);
+                         325, 108, 70, 22, hwnd, NULL, g_hInst, NULL);
             g_hPassword = CreateWindowW(L"EDIT", L"",
                 WS_VISIBLE | WS_CHILD | WS_BORDER | ES_AUTOHSCROLL | ES_PASSWORD,
-                395, 91, 145, 24, hwnd, (HMENU)IDC_PASSWORD, g_hInst, NULL);
+                395, 106, 151, 24, hwnd, (HMENU)IDC_PASSWORD, g_hInst, NULL);
 
-            /* Fix UEFI checkbox */
+            /* ---- 修复 UEFI 引导 ---- */
             g_hChkFixBoot = CreateWindowW(L"BUTTON", L"安装完成后修复 UEFI 引导",
                 WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX | BS_LEFT,
-                20, 127, 280, 22, hwnd, (HMENU)IDC_CHK_FIXBOOT, g_hInst, NULL);
+                20, 142, 280, 22, hwnd, (HMENU)IDC_CHK_FIXBOOT, g_hInst, NULL);
             SendMessage(g_hChkFixBoot, BM_SETCHECK, BST_CHECKED, 0);
 
-            /* Drive list */
+            /* ---- 磁盘列表 ---- */
             g_hDriveList = CreateWindowW(WC_LISTVIEWW, L"",
                 WS_VISIBLE | WS_CHILD | WS_BORDER |
                 LVS_REPORT | LVS_SINGLESEL | LVS_NOSORTHEADER,
-                20, 155, 525, 140, hwnd, (HMENU)IDC_DRIVE_LIST, g_hInst, NULL);
+                20, 172, 525, 140, hwnd, (HMENU)IDC_DRIVE_LIST, g_hInst, NULL);
 
             WCHAR* titles[] = { L"盘符", L"总大小", L"可用空间", L"文件系统", L"类型", L"卷标" };
             int widths[] = { 50, 80, 80, 65, 75, 150 };
@@ -359,36 +479,55 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             }
             ListView_SetExtendedListViewStyle(g_hDriveList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
 
-            /* Install button */
+            /* ---- 安装按钮 ---- */
             g_hBtnInstall = CreateWindowW(L"BUTTON", L"开始安装系统",
                 WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-                115, 308, 330, 38, hwnd, (HMENU)IDC_BTN_INSTALL, g_hInst, NULL);
+                115, 325, 330, 38, hwnd, (HMENU)IDC_BTN_INSTALL, g_hInst, NULL);
 
-            /* Status */
+            /* ---- 状态栏 ---- */
             g_hStatus = CreateWindowW(L"EDIT", L"就绪，等待操作...",
                 WS_VISIBLE | WS_CHILD | WS_BORDER | ES_READONLY,
-                20, 358, 520, 28, hwnd, (HMENU)IDC_STATUS, g_hInst, NULL);
+                20, 375, 520, 28, hwnd, (HMENU)IDC_STATUS, g_hInst, NULL);
 
-            /* Apply font */
+            /* 应用字体 */
             if (hFont) {
                 HWND child = NULL;
                 while ((child = FindWindowExW(hwnd, child, NULL, NULL)) != NULL)
                     SendMessage(child, WM_SETFONT, (WPARAM)hFont, TRUE);
             }
 
-            /* Initial data */
+            /* 初始化磁盘列表 */
             RefreshDriveList();
+
+            /* 启动后台搜索线程 */
+            unsigned int tid;
+            CloseHandle((HANDLE)_beginthreadex(NULL, 0, SearchThread, (void*)hwnd, 0, &tid));
+            break;
+        }
+
+        /* 搜索线程完成，填充下拉列表 */
+        case WM_APP + 1: {
+            PopulateSnaCombo();
             break;
         }
 
         case WM_COMMAND: {
-            if (LOWORD(wParam) == IDC_BTN_BROWSE) {
+            WORD id = LOWORD(wParam);
+            if (id == IDC_BTN_BROWSE) {
+                /* 浏览选择 SNA 文件 */
                 WCHAR path[MAX_PATH] = {0};
                 if (OpenSnaFile(hwnd, path, MAX_PATH)) {
-                    SetWindowTextW(g_hSnaPath, path);
+                    /* 检查是否已在列表中，没有则追加 */
+                    int found = (int)SendMessageW(g_hSnaCombo, CB_FINDSTRINGEXACT, (WPARAM)-1, (LPARAM)path);
+                    if (found == CB_ERR) {
+                        found = (int)SendMessageW(g_hSnaCombo, CB_ADDSTRING, 0, (LPARAM)path);
+                    }
+                    SendMessageW(g_hSnaCombo, CB_SETCURSEL, (WPARAM)found, 0);
+                    /* 同步编辑框文本（CBS_DROPDOWN 模式下需要手动设置） */
+                    SetWindowTextW(g_hSnaCombo, path);
                     SetWindowTextW(g_hStatus, L"已选择镜像文件");
                 }
-            } else if (LOWORD(wParam) == IDC_BTN_INSTALL) {
+            } else if (id == IDC_BTN_INSTALL) {
                 StartInstall(hwnd);
             }
             break;
@@ -402,7 +541,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 /* ====== Entry Point ====== */
 
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+    (void)hPrevInstance; (void)lpCmdLine;
     g_hInst = hInstance;
     INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_WIN95_CLASSES | ICC_STANDARD_CLASSES | ICC_LISTVIEW_CLASSES };
     InitCommonControlsEx(&icc);
@@ -419,7 +559,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     if (!RegisterClassExW(&wc)) return 1;
 
     int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
-    int wx = 570, wy = 410;
+    int wx = 570, wy = 430;
     int x = (sw - wx) / 2, y = (sh - wy) / 2;
 
     g_hWnd = CreateWindowExW(0, L"SnapInstClass", L"Snapshot 系统安装工具",
