@@ -127,7 +127,7 @@ static void RefreshDriveList(void) {
         int idx = (int)SendMessageW(g_hTargetDrive, CB_ADDSTRING, 0, (LPARAM)display);
         SendMessage(g_hTargetDrive, CB_SETITEMDATA, (WPARAM)idx, (LPARAM)i);
 
-        LVITEMW lvi = { LVIF_TEXT, g_driveCount, 0, 0, 0, di->szDrive };
+        LVITEMW lvi = { LVIF_TEXT, g_driveCount, 0, 0, 0, (LPWSTR)di->szDrive };
         lvi.iItem = g_driveCount;
         ListView_InsertItem(g_hDriveList, &lvi);
         ListView_SetItemText(g_hDriveList, g_driveCount, 1, sizeStr);
