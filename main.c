@@ -239,12 +239,13 @@ static void PopulateSnaCombo(void) {
         swprintf(msg, 64, L"搜索完成，未找到 SNA 镜像文件");
         SetWindowTextW(g_hSearchStatus, msg);
     } else {
-        for (int i = 0; i < g_snaCount; i++) {
-            /* 搜索结果存入下拉列表前统一正斜杠 */
+        /* 搜索顺序是 Z→A，每搜完一个盘头插到列表顶部
+         * 最终效果：U/V/W 等靠后盘符的镜像排在最上面，C/D/E 在底部 */
+        for (int i = g_snaCount - 1; i >= 0; i--) {
             WCHAR normalized[MAX_PATH];
             wcscpy(normalized, g_snaFiles[i]);
             NormalizePathSlash(normalized);
-            SendMessageW(g_hSnaCombo, CB_ADDSTRING, 0, (LPARAM)normalized);
+            SendMessageW(g_hSnaCombo, CB_INSERTSTRING, 0, (LPARAM)normalized);
         }
         SendMessageW(g_hSnaCombo, CB_SETCURSEL, 0, 0);
         WCHAR msg[64];
