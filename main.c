@@ -50,12 +50,22 @@ int g_driveCount = 0;
 
 /* ====== Helper Functions ====== */
 
-/* 将路径中的反斜杠 \\ 统一替换为正斜杠 /，Windows API 完全支持 */
+/* 将路径中的反斜杠 \\ 统一替换为正斜杠 /，并合并连续的反斜杠/正斜杠
+ * 解决根目录拼接时产生双反斜杠导致显示 D:// 的问题
+ * Windows API 完全支持正斜杠路径 */
 static void NormalizePathSlash(WCHAR* path) {
     if (!path) return;
-    for (WCHAR* p = path; *p; p++) {
-        if (*p == L'\\') *p = L'/';
+    WCHAR buf[MAX_PATH];
+    int j = 0;
+    for (int i = 0; path[i] && j < MAX_PATH - 1; i++) {
+        /* 跳过连续的反斜杠或正斜杠，保留第一个 */
+        if ((path[i] == L'\\' || path[i] == L'/')
+            && i > 0 && (path[i-1] == L'\\' || path[i-1] == L'/' || path[i-1] == L':'))
+            continue;
+        buf[j++] = (path[i] == L'\\') ? L'/' : path[i];
     }
+    buf[j] = L'\0';
+    wcscpy(path, buf);
 }
 
 static const WCHAR* GetDriveTypeStr(UINT type) {
@@ -197,18 +207,17 @@ static unsigned int __stdcall SearchThread(void* param) {
     SetWindowTextW(g_hSearchStatus, L"正在搜索 SNA 镜像，请稍候...");
 
     DWORD dwDrives = GetLogicalDrives();
-    for (int i = 0; i < 26; i++) {
+    /* 倒序遍历，从 Z 到 A，U 盘盘符靠后优先搜索 */
+    for (int i = 25; i >= 0; i--) {
         if (!(dwDrives & (1 << i))) continue;
         WCHAR szRoot[4];
         swprintf(szRoot, 4, L"%c:\\", L'A' + i);
         UINT dt = GetDriveTypeW(szRoot);
-        /* 搜索固定磁盘和可移动磁盘 */
+        /* 搜索固定磁盘、可移动磁盘、虚拟磁盘 */
         if (dt == DRIVE_FIXED || dt == DRIVE_REMOVABLE || dt == DRIVE_RAMDISK) {
             WCHAR msg[64];
             swprintf(msg, 64, L"正在搜索 %c 盘...", L'A' + i);
             SetWindowTextW(g_hSearchStatus, msg);
-            WCHAR searchDir[4];
-            swprintf(searchDir, 4, L"%c:", L'A' + i);
             SearchSnaInDir(szRoot);
         }
     }
