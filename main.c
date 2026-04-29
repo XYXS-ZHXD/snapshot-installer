@@ -30,6 +30,7 @@ HWND g_hBtnInstall, g_hChkFixBoot, g_hSearchStatus;
 WCHAR g_snaFiles[MAX_SNA_FILES][MAX_PATH];
 int   g_snaCount = 0;
 BOOL  g_bSearching = FALSE;
+BOOL  g_bFoundInDrive = FALSE;  /* 某盘已找到镜像，停止搜索后续盘符 */
 
 typedef struct {
     HWND hwnd;
@@ -165,6 +166,7 @@ static void RefreshDriveList(void) {
 /* 递归搜索指定根目录下的所有 .sna 文件 */
 static void SearchSnaInDir(const WCHAR* dir) {
     if (g_snaCount >= MAX_SNA_FILES) return;
+    if (g_bFoundInDrive) return;  /* 已找到镜像，不再继续搜 */
 
     WCHAR pattern[MAX_PATH];
     swprintf(pattern, MAX_PATH, L"%s\\*", dir);
@@ -202,13 +204,15 @@ static unsigned int __stdcall SearchThread(void* param) {
     HWND hwnd = (HWND)param;
     g_bSearching = TRUE;
     g_snaCount = 0;
+    g_bFoundInDrive = FALSE;
 
     /* 更新搜索状态 */
     SetWindowTextW(g_hSearchStatus, L"正在搜索 SNA 镜像，请稍候...");
 
     DWORD dwDrives = GetLogicalDrives();
-    /* 倒序遍历，从 Z 到 A，U 盘盘符靠后优先搜索 */
+    /* 倒序遍历，从 Z 到 A，一旦找到镜像就停止搜索 */
     for (int i = 25; i >= 0; i--) {
+        if (g_bFoundInDrive) break;  /* 已找到镜像，停止遍历 */
         if (!(dwDrives & (1 << i))) continue;
         WCHAR szRoot[4];
         swprintf(szRoot, 4, L"%c:\\", L'A' + i);
@@ -219,6 +223,8 @@ static unsigned int __stdcall SearchThread(void* param) {
             swprintf(msg, 64, L"正在搜索 %c 盘...", L'A' + i);
             SetWindowTextW(g_hSearchStatus, msg);
             SearchSnaInDir(szRoot);
+            /* 本盘找到镜像后停止，不再搜索后续盘符 */
+            if (g_snaCount > 0) g_bFoundInDrive = TRUE;
         }
     }
 
@@ -239,13 +245,12 @@ static void PopulateSnaCombo(void) {
         swprintf(msg, 64, L"搜索完成，未找到 SNA 镜像文件");
         SetWindowTextW(g_hSearchStatus, msg);
     } else {
-        /* 搜索顺序是 Z→A，每搜完一个盘头插到列表顶部
-         * 最终效果：U/V/W 等靠后盘符的镜像排在最上面，C/D/E 在底部 */
-        for (int i = g_snaCount - 1; i >= 0; i--) {
+        /* 只搜索到第一个有镜像的盘，直接追加到列表 */
+        for (int i = 0; i < g_snaCount; i++) {
             WCHAR normalized[MAX_PATH];
             wcscpy(normalized, g_snaFiles[i]);
             NormalizePathSlash(normalized);
-            SendMessageW(g_hSnaCombo, CB_INSERTSTRING, 0, (LPARAM)normalized);
+            SendMessageW(g_hSnaCombo, CB_ADDSTRING, 0, (LPARAM)normalized);
         }
         SendMessageW(g_hSnaCombo, CB_SETCURSEL, 0, 0);
         WCHAR msg[64];
