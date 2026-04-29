@@ -50,6 +50,14 @@ int g_driveCount = 0;
 
 /* ====== Helper Functions ====== */
 
+/* 将路径中的反斜杠 \\ 统一替换为正斜杠 /，Windows API 完全支持 */
+static void NormalizePathSlash(WCHAR* path) {
+    if (!path) return;
+    for (WCHAR* p = path; *p; p++) {
+        if (*p == L'\\') *p = L'/';
+    }
+}
+
 static const WCHAR* GetDriveTypeStr(UINT type) {
     switch (type) {
         case DRIVE_FIXED:    return L"本地磁盘";
@@ -223,7 +231,11 @@ static void PopulateSnaCombo(void) {
         SetWindowTextW(g_hSearchStatus, msg);
     } else {
         for (int i = 0; i < g_snaCount; i++) {
-            SendMessageW(g_hSnaCombo, CB_ADDSTRING, 0, (LPARAM)g_snaFiles[i]);
+            /* 搜索结果存入下拉列表前统一正斜杠 */
+            WCHAR normalized[MAX_PATH];
+            wcscpy(normalized, g_snaFiles[i]);
+            NormalizePathSlash(normalized);
+            SendMessageW(g_hSnaCombo, CB_ADDSTRING, 0, (LPARAM)normalized);
         }
         SendMessageW(g_hSnaCombo, CB_SETCURSEL, 0, 0);
         WCHAR msg[64];
@@ -517,7 +529,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 /* 浏览选择 SNA 文件 */
                 WCHAR path[MAX_PATH] = {0};
                 if (OpenSnaFile(hwnd, path, MAX_PATH)) {
-                    /* 检查是否已在列表中，没有则追加 */
+                    /* 统一正斜杠后检查是否已在列表中，没有则追加 */
+                    NormalizePathSlash(path);
                     int found = (int)SendMessageW(g_hSnaCombo, CB_FINDSTRINGEXACT, (WPARAM)-1, (LPARAM)path);
                     if (found == CB_ERR) {
                         found = (int)SendMessageW(g_hSnaCombo, CB_ADDSTRING, 0, (LPARAM)path);
